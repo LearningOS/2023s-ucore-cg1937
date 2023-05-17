@@ -84,6 +84,7 @@ void usertrap()
 			exit(-3);
 			break;
 		default:
+			printf("into internal error trap!\n");
 			unknown_trap();
 			break;
 		}
