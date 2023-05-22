@@ -8,6 +8,7 @@
 #define CPU_FREQ (12500000)
 
 uint64 get_cycle();
+uint64 get_time();
 void timer_init();
 void set_next_timer();
 
