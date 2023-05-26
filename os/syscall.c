@@ -6,6 +6,9 @@
 #include "timer.h"
 #include "trap.h"
 
+#define MAX_BYTE (1ULL << 30)
+#define max(a, b) ((a) > (b) ? (a) : (b))
+
 uint64 sys_write(int fd, uint64 va, uint len)
 {
 	debugf("sys_write fd = %d str = %x, len = %d", fd, va, len);
@@ -92,26 +95,77 @@ uint64 sys_wait(int pid, uint64 va)
 	return wait(pid, code);
 }
 
+int mmap(void *start, unsigned long long len, int port, int flag, int fd)
+{
+	// 合并到ch5的思路，max_page需要更新（之前输出调试信息发现max_page不够大，如果不更新会导致mmap成功，但是后续的freewalk会找到叶子页表导致panic）
+	if ((uint64)start % PGSIZE)
+		return -1;
+	if (len == 0)
+		return 0;
+	if (len > MAX_BYTE)
+		return -1;
+	if ((port & ~0x7) != 0 || (port & 0x7) == 0)
+		return -1;
+	int perm = ((port << 1) | PTE_U);
+	struct proc *p = curr_proc();
+	uint64 va = (uint64)start;
+	uint64 pages = PGROUNDUP(len) / PGSIZE;
+	for (uint64 i = 0; i < pages; ++i) {
+		void *pa = kalloc();
+		if (pa == 0)
+			return -1;
+		if (mappages(p->pagetable, va + i * PGSIZE, PGSIZE, (uint64)pa,
+			     perm) != 0)
+			return -1;
+		uint64 curr_pages = va / PGSIZE + i + 1;
+		p->max_page = max(curr_pages, p->max_page);
+	}
+	return 0;
+}
+
+int munmap(void *start, unsigned long long len)
+{
+	if ((uint64)start % PGSIZE != 0)
+		return -1;
+	if (len == 0)
+		return 0;
+	if (len > MAX_BYTE)
+		return -1;
+	struct proc *p = curr_proc();
+	uint64 num_pages = (len + PGSIZE - 1) / PAGE_SIZE;
+	if (num_pages > p->max_page)
+		return -1;
+
+
+	for (uint64 i = (uint64)start; i < (uint64)start + len;
+	     i += PAGE_SIZE) {
+		if (walkaddr(p->pagetable, (uint64)i) == 0)
+			return -1;
+	}
+	uvmunmap(p->pagetable, (uint64)start, num_pages, 1);
+	return 0;
+}
+
 uint64 sys_spawn(uint64 va)
 {
 	// TODO: your job is to complete the sys call
 	return -1;
 }
 
-uint64 sys_set_priority(long long prio){
-    // TODO: your job is to complete the sys call
-    return -1;
+uint64 sys_set_priority(long long prio)
+{
+	// TODO: your job is to complete the sys call
+	return -1;
 }
-
 
 uint64 sys_sbrk(int n)
 {
-        uint64 addr;
-        struct proc *p = curr_proc();
-        addr = p->program_brk;
-        if(growproc(n) < 0)
-                return -1;
-        return addr;
+	uint64 addr;
+	struct proc *p = curr_proc();
+	addr = p->program_brk;
+	if (growproc(n) < 0)
+		return -1;
+	return addr;
 }
 
 extern char trap_page[];
@@ -158,9 +212,15 @@ void syscall()
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
 		break;
+	case SYS_mmap:
+		ret = mmap((void *)args[0], args[1], args[2], args[3], args[4]);
+		break;
+	case SYS_munmap:
+		ret = munmap((void *)args[0], args[1]);
+		break;
 	case SYS_sbrk:
-                ret = sys_sbrk(args[0]);
-                break;
+		ret = sys_sbrk(args[0]);
+		break;
 	default:
 		ret = -1;
 		errorf("unknown syscall %d", id);
