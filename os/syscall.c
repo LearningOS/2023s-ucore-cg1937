@@ -146,10 +146,23 @@ int munmap(void *start, unsigned long long len)
 	return 0;
 }
 
-uint64 sys_spawn(uint64 va)
+int sys_spawn(char* filename)
+//思路：filename在用户空间，需要copyin到内核空间，然后调用loader加载程序，然后调用add_task添加到任务队列
 {
 	// TODO: your job is to complete the sys call
-	return -1;
+	struct proc *p = curr_proc();
+	struct proc *np;
+	if ((np = allocproc()) == 0)
+		return -1;
+	np->parent = p;
+	char k_filename[200];
+	copyinstr(p->pagetable, k_filename, (uint64)filename, 200);
+	int id = get_id_by_name(k_filename);
+	if (id < 0)
+		return -1;
+	loader(id, np);
+	add_task(np);
+	return np->pid;
 }
 
 uint64 sys_set_priority(long long prio)
@@ -210,7 +223,7 @@ void syscall()
 		ret = sys_wait(args[0], args[1]);
 		break;
 	case SYS_spawn:
-		ret = sys_spawn(args[0]);
+		ret = sys_spawn((char *)args[0]);
 		break;
 	case SYS_mmap:
 		ret = mmap((void *)args[0], args[1], args[2], args[3], args[4]);
