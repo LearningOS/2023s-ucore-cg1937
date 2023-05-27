@@ -58,7 +58,7 @@ struct proc *fetch_task()
 
 void add_task(struct proc *p)
 {
-	push_queue(&task_queue, p - pool);
+	push_queue(&task_queue, p - pool, p->stride);
 	debugf("add task %d(pid=%d) to task queue\n", p - pool, p->pid);
 }
 
@@ -83,9 +83,12 @@ found:
 	p->max_page = 0;
 	p->parent = NULL;
 	p->exit_code = 0;
+	p->stride = 0;
+	p->priority = 16;
+	p->pass = BIG_STRIDE / p->priority;
 	p->pagetable = uvmcreate((uint64)p->trapframe);
 	p->program_brk = 0;
-        p->heap_bottom = 0;
+	p->heap_bottom = 0;
 	memset(&p->context, 0, sizeof(p->context));
 	memset((void *)p->kstack, 0, KSTACK_SIZE);
 	memset((void *)p->trapframe, 0, TRAP_PAGE_SIZE);
@@ -122,6 +125,7 @@ void scheduler()
 		}
 		tracef("swtich to proc %d", p - pool);
 		p->state = RUNNING;
+		p->stride += p->pass;
 		current_proc = p;
 		swtch(&idle.context, &p->context);
 	}

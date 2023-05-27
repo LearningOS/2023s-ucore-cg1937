@@ -168,6 +168,12 @@ int sys_spawn(char* filename)
 uint64 sys_set_priority(long long prio)
 {
 	// TODO: your job is to complete the sys call
+	struct proc *p = curr_proc();
+	if (prio >= 2)
+	{
+		p->priority = prio;
+		return p->priority;
+	}
 	return -1;
 }
 
@@ -230,6 +236,9 @@ void syscall()
 		break;
 	case SYS_munmap:
 		ret = munmap((void *)args[0], args[1]);
+		break;
+	case SYS_setpriority:
+		ret = sys_set_priority(args[0]);
 		break;
 	case SYS_sbrk:
 		ret = sys_sbrk(args[0]);
