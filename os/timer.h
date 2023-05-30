@@ -7,6 +7,7 @@
 // QEMU
 #define CPU_FREQ (12500000)
 
+uint64 get_time();
 uint64 get_cycle();
 void timer_init();
 void set_next_timer();

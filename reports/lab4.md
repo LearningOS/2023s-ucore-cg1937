@@ -1,0 +1,5 @@
+lab4 实现思路：
+根据文档，主要利用dirlink和dirunlink这两个工具函数来控制对一个目录下（根目录）的文件名的分配和取消。
+dirunlink其实就是dirlink的逆过程。
+注意ivalid，iupdate和iput的使用来保证inode不会出现没有处理干净的情况
+整体来讲难度和文档描述相同，不高，但是概念很多，并且错综复杂。

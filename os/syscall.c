@@ -6,6 +6,9 @@
 #include "timer.h"
 #include "trap.h"
 
+#define MAX_BYTE (1ULL << 30)
+#define max(a, b) ((a) > (b) ? (a) : (b))
+
 uint64 console_write(uint64 va, uint64 len)
 {
 	struct proc *p = curr_proc();
@@ -83,6 +86,86 @@ uint64 sys_sched_yield()
 	return 0;
 }
 
+int mmap(void *start, unsigned long long len, int port, int flag, int fd)
+{
+	// 合并到ch5的思路，max_page需要更新（之前输出调试信息发现max_page不够大，如果不更新会导致mmap成功，但是后续的freewalk会找到叶子页表导致panic）
+	if ((uint64)start % PGSIZE)
+		return -1;
+	if (len == 0)
+		return 0;
+	if (len > MAX_BYTE)
+		return -1;
+	if ((port & ~0x7) != 0 || (port & 0x7) == 0)
+		return -1;
+	int perm = ((port << 1) | PTE_U);
+	struct proc *p = curr_proc();
+	uint64 va = (uint64)start;
+	uint64 pages = PGROUNDUP(len) / PGSIZE;
+	for (uint64 i = 0; i < pages; ++i) {
+		void *pa = kalloc();
+		if (pa == 0) {
+			uvmunmap(p->pagetable, va, i, 1);
+			return -1;
+		}
+		if (mappages(p->pagetable, va + i * PGSIZE, PGSIZE, (uint64)pa,
+			     perm) != 0) {
+			uvmunmap(p->pagetable, va, i, 1);
+			kfree(pa);
+			return -1;
+		}
+		uint64 curr_pages = va / PGSIZE + i + 1;
+		p->max_page = max(curr_pages, p->max_page);
+	}
+	return 0;
+}
+
+int munmap(void *start, unsigned long long len)
+{
+	if ((uint64)start % PGSIZE != 0)
+		return -1;
+	if (len == 0)
+		return 0;
+	if (len > MAX_BYTE)
+		return -1;
+	struct proc *p = curr_proc();
+	uint64 num_pages = (len + PGSIZE - 1) / PAGE_SIZE;
+	if (num_pages > p->max_page)
+		return -1;
+
+	for (uint64 i = (uint64)start; i < (uint64)start + len;
+	     i += PAGE_SIZE) {
+		if (walkaddr(p->pagetable, (uint64)i) == 0)
+			return -1;
+	}
+	uvmunmap(p->pagetable, (uint64)start, num_pages, 1);
+	return 0;
+}
+
+int sys_task_info(TaskInfo *ti)
+{
+	struct proc *p = curr_proc();
+	TaskInfo kernel_tmp_ti; // 定义一个临时的 TaskInfo 变量，用于在内核空间中操作
+
+	// 将用户空间的 TaskInfo 结构体复制到内核空间中
+	// if (copyin(p->pagetable, (char *)&kernel_tmp_ti, (uint64)ti,
+	// 	   sizeof(TaskInfo)) != 0)
+	// 	return -1; // copyin 失败，返回错误
+
+	// 在内核空间中对 kti 结构体进行操作
+	kernel_tmp_ti.status = Running;
+	kernel_tmp_ti.time = get_time() - p->start_time;
+	memmove(kernel_tmp_ti.syscall_times, p->syscall_times,
+		sizeof(p->syscall_times));
+
+	// 将修改后的 kti 结构体复制回用户空间中
+	if (copyout(p->pagetable, (uint64)ti, (char *)&kernel_tmp_ti,
+		    sizeof(TaskInfo)) != 0) {
+		return -1; // copyout 失败，返回错误
+	}
+
+	return 0; // 成功执行 syscall，返回 0
+}
+
 uint64 sys_gettimeofday(uint64 val, int _tz)
 {
 	struct proc *p = curr_proc();
@@ -142,15 +225,34 @@ uint64 sys_wait(int pid, uint64 va)
 	return wait(pid, code);
 }
 
-uint64 sys_spawn(uint64 va)
+int sys_spawn(char *filename)
+//思路：filename在用户空间，需要copyin到内核空间，然后调用loader加载程序，然后调用add_task添加到任务队列
 {
 	// TODO: your job is to complete the sys call
-	return -1;
+	struct proc *p = curr_proc();
+	struct proc *np;
+	if ((np = allocproc()) == 0)
+		return -1;
+	np->parent = p;
+	char k_filename[200];
+	copyinstr(p->pagetable, k_filename, (uint64)filename, 200);
+	struct inode *ip;
+	if ((ip = namei(k_filename)) == 0)
+		return -1;
+	bin_loader(ip, np);
+	iput(ip);
+	add_task(np);
+	return np->pid;
 }
 
 uint64 sys_set_priority(long long prio)
 {
 	// TODO: your job is to complete the sys call
+	if (prio >= 2) {
+		struct proc *p = curr_proc();
+		p->priority = prio;
+		return prio;
+	}
 	return -1;
 }
 
@@ -177,23 +279,82 @@ uint64 sys_close(int fd)
 	return 0;
 }
 
-int sys_fstat(int fd, uint64 stat)
+struct Stat {
+	uint64 dev;
+	uint64 ino;
+	uint32 mode;
+	uint32 nlink;
+	uint64 pad[7];
+};
+#define DIR 0x040000
+#define FILE 0x100000
+
+int sys_fstat(int fd, struct Stat *stat)
 {
 	//TODO: your job is to complete the syscall
-	return -1;
+	if (fd < 0 || fd > FD_BUFFER_SIZE)
+		return -1;
+	struct proc *p = curr_proc();
+	struct file *f = p->files[fd];
+	if (f == NULL)
+		return -1;
+	struct Stat k_stat;
+	k_stat.dev = 0;
+	k_stat.ino = f->ip->inum;
+	k_stat.mode = f->ip->type == T_DIR ? DIR : FILE;
+	k_stat.nlink = f->ip->link;
+	copyout(p->pagetable, (uint64)stat, (char *)&k_stat,
+		sizeof(struct Stat));
+	return 0;
 }
 
-int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath,
+int sys_linkat(int olddirfd, char *oldpath, int newdirfd, char *newpath,
 	       uint64 flags)
 {
 	//TODO: your job is to complete the syscall
-	return -1;
+	printf("linkat\n");
+	struct inode *old_ip, *new_ip, *dp;
+	char k_oldpath[200];
+	char k_newpath[200];
+	copyinstr(curr_proc()->pagetable, k_oldpath, (uint64)oldpath, 200);
+	copyinstr(curr_proc()->pagetable, k_newpath, (uint64)newpath, 200);
+	if ((old_ip = namei(k_oldpath)) == 0)
+		return -1;
+	if ((new_ip = namei(k_newpath)) != 0) {
+		iput(old_ip);
+		iput(new_ip);
+		return -1;
+	}
+
+	dp = root_dir();
+	ivalid(dp);
+	if (dirlink(dp, k_newpath, old_ip->inum) < 0) {
+		iput(old_ip);
+		return -1;
+	}
+
+	old_ip->link++;
+	iupdate(old_ip);
+	iput(old_ip);
+	iput(dp);
+
+	return 0;
 }
 
-int sys_unlinkat(int dirfd, uint64 name, uint64 flags)
+int sys_unlinkat(int dirfd, char *name, uint64 flags)
 {
 	//TODO: your job is to complete the syscall
-	return -1;
+	// printf("unlinkat\n");
+	struct inode *dp;
+	char k_name[200];
+	copyinstr(curr_proc()->pagetable, k_name, (uint64)name, 200);
+	dp = root_dir();
+	ivalid(dp);
+	if (dirunlink(dp, k_name) < 0) {
+		return -1;
+	}
+	iput(dp);
+	return 0;
 }
 
 uint64 sys_sbrk(int n)
@@ -216,6 +377,7 @@ void syscall()
 			   trapframe->a3, trapframe->a4, trapframe->a5 };
 	tracef("syscall %d args = [%x, %x, %x, %x, %x, %x]", id, args[0],
 	       args[1], args[2], args[3], args[4], args[5]);
+	curr_proc()->syscall_times[id]++;
 	switch (id) {
 	case SYS_write:
 		ret = sys_write(args[0], args[1], args[2]);
@@ -254,19 +416,32 @@ void syscall()
 		ret = sys_wait(args[0], args[1]);
 		break;
 	case SYS_fstat:
-		ret = sys_fstat(args[0], args[1]);
+		ret = sys_fstat(args[0], (struct Stat *)args[1]);
 		break;
 	case SYS_linkat:
-		ret = sys_linkat(args[0], args[1], args[2], args[3], args[4]);
+		ret = sys_linkat(args[0], (char *)args[1], args[2],
+				 (char *)args[3], args[4]);
 		break;
 	case SYS_unlinkat:
-		ret = sys_unlinkat(args[0], args[1], args[2]);
+		ret = sys_unlinkat(args[0], (char *)args[1], args[2]);
 		break;
 	case SYS_spawn:
-		ret = sys_spawn(args[0]);
+		ret = sys_spawn((char *)args[0]);
 		break;
 	case SYS_sbrk:
 		ret = sys_sbrk(args[0]);
+		break;
+	case SYS_setpriority:
+		ret = sys_set_priority(args[0]);
+		break;
+	case SYS_mmap:
+		ret = mmap((void *)args[0], args[1], args[2], args[3], args[4]);
+		break;
+	case SYS_munmap:
+		ret = munmap((void *)args[0], args[1]);
+		break;
+	case SYS_task_info:
+		ret = sys_task_info((TaskInfo *)args[0]);
 		break;
 	default:
 		ret = -1;
