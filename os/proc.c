@@ -143,6 +143,13 @@ found:
 	p->next_semaphore_id = 0;
 	p->next_condvar_id = 0;
 	// LAB5: (1) you may initialize your new proc variables here
+	p->detect_flag = DISABLED;
+	memset((void *)p->mutex_available, 0, sizeof(p->mutex_available));
+	memset((void *)p->mutex_allocation, 0, sizeof(p->mutex_allocation));
+	memset((void *)p->mutex_request, 0, sizeof(p->mutex_request));
+	memset((void *)p->semaphore_available, 0, sizeof(p->semaphore_available));
+	memset((void *)p->semaphore_allocation, 0, sizeof(p->semaphore_allocation));
+	memset((void *)p->semaphore_request, 0, sizeof(p->semaphore_request));
 	return p;
 }
 
